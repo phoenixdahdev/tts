@@ -1,6 +1,10 @@
 /// <reference lib="webworker" />
 
-import { pipeline, type AutomaticSpeechRecognitionPipeline } from "@huggingface/transformers"
+import {
+  pipeline,
+  WhisperTextStreamer,
+  type AutomaticSpeechRecognitionPipeline,
+} from "@huggingface/transformers"
 
 type LoadMsg = {
   type: "load"
@@ -30,7 +34,10 @@ self.addEventListener("message", async (event: MessageEvent<InMsg>) => {
       }
       transcriber = (await pipeline("automatic-speech-recognition", msg.model, {
         device: msg.device,
-        dtype: msg.device === "webgpu" ? "fp32" : "q8",
+        dtype:
+          msg.device === "webgpu"
+            ? { encoder_model: "fp32", decoder_model_merged: "q4" }
+            : { encoder_model: "fp32", decoder_model_merged: "fp32" },
         progress_callback: (p: unknown) => {
           ;(self as unknown as Worker).postMessage({ type: "progress", payload: p })
         },
@@ -50,12 +57,42 @@ self.addEventListener("message", async (event: MessageEvent<InMsg>) => {
         return
       }
       ;(self as unknown as Worker).postMessage({ type: "transcribing" })
+
+      const post = (self as unknown as Worker).postMessage.bind(self)
+      const processor = (transcriber as unknown as { processor: { feature_extractor: { config: { chunk_length: number } } } }).processor
+      const model = (transcriber as unknown as { model: { config: { max_source_positions: number } } }).model
+      const time_precision =
+        processor.feature_extractor.config.chunk_length /
+        model.config.max_source_positions
+
+      const streamer = new WhisperTextStreamer(
+        transcriber.tokenizer as unknown as ConstructorParameters<typeof WhisperTextStreamer>[0],
+        {
+        time_precision,
+        skip_prompt: true,
+        skip_special_tokens: true,
+        on_chunk_start: (start: number) => {
+          post({ type: "chunk-start", start })
+        },
+        callback_function: (text: string) => {
+          post({ type: "partial", text })
+        },
+        on_chunk_end: (end: number) => {
+          post({ type: "chunk-end", end })
+        },
+        on_finalize: () => {
+          post({ type: "stream-end" })
+        },
+        },
+      )
+
       const result = await transcriber(msg.audio, {
         language: msg.language ?? undefined,
         task: "transcribe",
         return_timestamps: true,
         chunk_length_s: 30,
         stride_length_s: 5,
+        streamer,
       })
       ;(self as unknown as Worker).postMessage({ type: "result", payload: result })
       return

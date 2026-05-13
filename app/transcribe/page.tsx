@@ -57,6 +57,8 @@ export default function TranscribePage() {
   const [device, setDevice] = useState<"webgpu" | "wasm">("wasm")
   const [elapsed, setElapsed] = useState(0)
   const [audioPreviewUrl, setAudioPreviewUrl] = useState<string | null>(null)
+  const [streamingText, setStreamingText] = useState("")
+  const [liveChunks, setLiveChunks] = useState<Array<{ start: number; text: string }>>([])
 
   const workerRef = useRef<Worker | null>(null)
   const audioRef = useRef<Float32Array | null>(null)
@@ -111,6 +113,25 @@ export default function TranscribePage() {
           break
         case "transcribing":
           break
+        case "chunk-start":
+          setLiveChunks((prev) => [...prev, { start: msg.start, text: "" }])
+          break
+        case "partial":
+          setStreamingText((prev) => prev + msg.text)
+          setLiveChunks((prev) => {
+            if (prev.length === 0) return [{ start: 0, text: msg.text }]
+            const next = prev.slice()
+            next[next.length - 1] = {
+              ...next[next.length - 1],
+              text: next[next.length - 1].text + msg.text,
+            }
+            return next
+          })
+          break
+        case "chunk-end":
+          break
+        case "stream-end":
+          break
         case "result":
           if (tickRef.current) {
             clearInterval(tickRef.current)
@@ -163,6 +184,8 @@ export default function TranscribePage() {
     setError(null)
     setResult(null)
     setDownloads({})
+    setStreamingText("")
+    setLiveChunks([])
 
     setPhase("decoding")
     let mono: Float32Array
@@ -344,6 +367,42 @@ export default function TranscribePage() {
         <p className="rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-800 dark:border-red-900 dark:bg-red-950 dark:text-red-200">
           {error}
         </p>
+      )}
+
+      {phase === "transcribing" && !result && (
+        <section>
+          <h2 className="mb-2 flex items-center gap-2 text-sm font-medium text-neutral-700 dark:text-neutral-300">
+            <span className="relative flex h-2 w-2">
+              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
+              <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500" />
+            </span>
+            Live transcript
+          </h2>
+          <div className="max-h-96 overflow-y-auto rounded-md border border-neutral-200 bg-white p-4 text-sm leading-relaxed dark:border-neutral-800 dark:bg-neutral-900">
+            {liveChunks.length > 0 ? (
+              liveChunks.map((c, i) => (
+                <p key={i} className="mb-2 flex gap-3">
+                  <span className="shrink-0 font-mono text-xs text-neutral-400">
+                    {formatTimestamp(c.start)}
+                  </span>
+                  <span>
+                    {c.text.trim()}
+                    {i === liveChunks.length - 1 && (
+                      <span className="ml-0.5 inline-block h-3 w-1.5 animate-pulse bg-neutral-400 align-middle dark:bg-neutral-600" />
+                    )}
+                  </span>
+                </p>
+              ))
+            ) : streamingText ? (
+              <p className="whitespace-pre-wrap">
+                {streamingText}
+                <span className="ml-0.5 inline-block h-3 w-1.5 animate-pulse bg-neutral-400 align-middle dark:bg-neutral-600" />
+              </p>
+            ) : (
+              <p className="text-neutral-400">Waiting for first tokens…</p>
+            )}
+          </div>
+        </section>
       )}
 
       {result && (
